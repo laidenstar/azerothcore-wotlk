@@ -1887,31 +1887,30 @@ void GameEventMgr::SendWorldStateUpdate(Player* player, uint16 eventId)
     }
 }
 
+// Only collects GUIDs: an AI hook may remove objects from the map's object store (e.g. a SmartAI respawn of a dead
+// creature in dynamic spawn mode), which would invalidate an iterator over that store.
 class GameEventAIHookWorker
 {
 public:
-    GameEventAIHookWorker(uint16 eventId, bool activate) : _eventId(eventId), _activate(activate) { }
-
     void Visit(std::unordered_map<ObjectGuid, Creature*>& creatureMap)
     {
+        Creatures.reserve(creatureMap.size());
         for (auto const& p : creatureMap)
-            if (p.second->IsInWorld() && !p.second->IsDuringRemoveFromWorld() && p.second->FindMap() && p.second->IsAIEnabled && p.second->AI())
-                p.second->AI()->sOnGameEvent(_activate, _eventId);
+            Creatures.push_back(p.first);
     }
 
     void Visit(std::unordered_map<ObjectGuid, GameObject*>& gameObjectMap)
     {
+        GameObjects.reserve(gameObjectMap.size());
         for (auto const& p : gameObjectMap)
-            if (p.second->IsInWorld() && p.second->FindMap() && p.second->AI())
-                p.second->AI()->OnGameEvent(_activate, _eventId);
+            GameObjects.push_back(p.first);
     }
 
     template<class T>
     void Visit(std::unordered_map<ObjectGuid, T*>&) { }
 
-private:
-    uint16 _eventId;
-    bool _activate;
+    std::vector<ObjectGuid> Creatures;
+    std::vector<ObjectGuid> GameObjects;
 };
 
 void GameEventMgr::RunSmartAIScripts(uint16 eventId, bool activate)
@@ -1920,9 +1919,24 @@ void GameEventMgr::RunSmartAIScripts(uint16 eventId, bool activate)
     //! Not entirely sure how this will affect units in non-loaded grids.
     sMapMgr->DoForAllMaps([eventId, activate](Map* map)
     {
-        GameEventAIHookWorker worker(eventId, activate);
+        GameEventAIHookWorker worker;
         TypeContainerVisitor<GameEventAIHookWorker, MapStoredObjectTypesContainer> visitor(worker);
         visitor.Visit(map->GetObjectsStore());
+
+        for (ObjectGuid const& guid : worker.Creatures)
+        {
+            Creature* creature = map->GetCreature(guid);
+            if (creature && creature->IsInWorld() && !creature->IsDuringRemoveFromWorld() && creature->FindMap() &&
+                creature->IsAIEnabled && creature->AI())
+                creature->AI()->sOnGameEvent(activate, eventId);
+        }
+
+        for (ObjectGuid const& guid : worker.GameObjects)
+        {
+            GameObject* go = map->GetGameObject(guid);
+            if (go && go->IsInWorld() && go->FindMap() && go->AI())
+                go->AI()->OnGameEvent(activate, eventId);
+        }
     });
 }
 
